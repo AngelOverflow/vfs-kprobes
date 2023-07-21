@@ -1,0 +1,2 @@
+[workspace]
+members = ["vfs-kprobes", "vfs-kprobes-common", "xtask"]
