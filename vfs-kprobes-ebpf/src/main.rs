@@ -11,7 +11,7 @@ mod vmlinux;
 use aya_bpf::{
     macros::{kprobe,map}, 
     programs::ProbeContext,
-    helpers::{bpf_get_current_comm, bpf_ktime_get_ns, bpf_get_current_pid_tgid, bpf_probe_read_kernel},
+    helpers::{bpf_get_current_comm, bpf_ktime_get_ns, bpf_get_current_pid_tgid, bpf_probe_read_kernel_buf, bpf_probe_read_kernel_str_bytes},
     maps::{HashMap, PerfEventArray},
     //cty::c_void,
 };
@@ -52,7 +52,7 @@ pub enum AccessType {
 
 
 #[inline(always)]
-pub fn trace_entry(ctx: ProbeContext, access_type: AccessType, dentry: &dentry, inode: &inode, bytes: __kernel_size_t) {
+pub fn trace_entry(ctx: ProbeContext, access_type: AccessType, dentry: &dentry, inode: &inode, bytes: __kernel_size_t, pid_tgid: u64) {
     
     let comm: [i8; 16] = comm_to_i8_array(bpf_get_current_comm().unwrap());
 
@@ -85,8 +85,8 @@ pub fn trace_entry(ctx: ProbeContext, access_type: AccessType, dentry: &dentry, 
                 access: access,
                 comm: comm,
             };
-
-            dentry_to_path(ctx,dentry,ns,1,&fileaccess);
+            
+            dentry_to_path(ctx,dentry,ns,1,&fileaccess, pid_tgid);
         }
     }
 }
@@ -113,7 +113,10 @@ fn try_vfs_read(ctx: ProbeContext) -> Result<u32, u32> {
     let dentry: &dentry = unsafe {path.dentry.as_ref().unwrap()};
     let bytes : __kernel_size_t = ctx.arg(2).ok_or(1).unwrap();
     let inode: &inode = unsafe {dentry.d_inode.as_ref().unwrap()};
-    //trace_entry()
+    
+    let pid_tgid: u64 = bpf_get_current_pid_tgid();
+    
+    trace_entry(ctx, AccessType::Read, &dentry, &inode, bytes, pid_tgid);
 
     Ok(0)
 }
@@ -130,6 +133,25 @@ pub fn vfs_write(ctx: ProbeContext) -> u32 {
 
 fn try_vfs_write(ctx: ProbeContext) -> Result<u32, u32> {
     info!(&ctx, "function vfs_write called");
+
+    let file: &file = unsafe { ctx.arg::<*const file>(0).ok_or(1).unwrap().as_ref().unwrap() };
+    let path: path = file.f_path;
+    let dentry: &dentry = unsafe {path.dentry.as_ref().unwrap()};
+    let bytes : __kernel_size_t = ctx.arg(2).ok_or(1).unwrap();
+    let inode: &inode = unsafe {dentry.d_inode.as_ref().unwrap()};
+
+    let pid_tgid: u64 = bpf_get_current_pid_tgid();
+
+    unsafe {
+        if filepaths_map.get(&pid_tgid).is_none() {
+            info!(&ctx, "test");
+            filepaths_map.insert(&pid_tgid, &[0u8;1024], 0).unwrap();
+        }
+    }
+    
+
+    trace_entry(ctx, AccessType::Write, &dentry, &inode, bytes, pid_tgid);
+    
     Ok(0)
 }
 
@@ -236,24 +258,90 @@ pub static mut fileaccesses: PerfEventArray<[u8; 1024]> = PerfEventArray::with_m
 
 
 #[inline]
-pub fn dentry_to_path(ctx:ProbeContext, dentry: &dentry, ns: u64, order: u8, fileaccess: &FileAccess) {
+pub fn dentry_to_path(ctx:ProbeContext, dentry: &dentry, ns: u64, order: u8, fileaccess: &FileAccess, pid_tgid: u64) {
     
     let mut i = 0usize;
     let mut de = dentry;
 
-    let pid_tgid: u64 = bpf_get_current_pid_tgid();
-    let pid = pid_tgid as u32;
+    // I added pid_tgid in try_vfs_... because it triggers the eBPF verifier when called in dentry_to_path.
+    //let pid_tgid: u64 = bpf_get_current_pid_tgid();
+    let pid = pid_tgid as u32; // Not used
 
     unsafe {
+
+        
         if filepaths_map.get(&pid_tgid).is_none() {
             filepaths_map.insert(&pid_tgid, &[0u8;1024], 0).unwrap();
         }
 
+         
+        let u8_array = fileaccess.to_u8_array();
+
+        let mut buf = filepaths_map.get_ptr_mut(&pid_tgid).unwrap();
+
+        let mut offset = 0i64;
+
         let ret = unsafe {
-            bpf_probe_read_kernel(filepaths_map.get_ptr(&pid_tgid).ok_or_else(|| 1).unwrap())
+            bpf_probe_read_kernel_buf(
+                u8_array.as_ptr(),
+                &mut (*buf)[offset as usize..offset as usize + FILE_ACCESS_SIZE],
+                )
         };
+
+
+        offset += FILE_ACCESS_SIZE as i64;
+
+        // Add the slash before each directory entry except the first
+        if offset != 0 {
+            let tmp = offset-1;
+            (*buf)[tmp as usize] = b'/';
+        }
+
+        loop {
+            let i_name = de.d_name.name;
+
+            if offset < 0 {
+                break;
+            }
+
+
+            let name_len = unsafe {
+                bpf_probe_read_kernel_str_bytes(
+                    i_name,
+                    &mut (*buf)[offset as usize..offset as usize + 32],
+                )
+                .unwrap()
+                .len() as i64
+            };
+
+            // Add the slash before each directory entry except the first
+            if offset != 0 {
+                let tmp = offset-1;
+                (*buf)[tmp as usize] = b'/';
+            }
+
+            offset += name_len;
+
+            i += 1;
+            let parent = de.d_parent;
+            if parent.is_null() || i == PATH_LIST_LEN {
+                break;
+            } else {
+                de = unsafe { &(*parent) };
+            }
+        }
+
+        
+        unsafe {
+            fileaccesses.output(&ctx, &(*buf), 0);
+            filepaths_map.remove(&ns);
+        }
+
     }
 }
+
+
+
 
 
 #[panic_handler]
