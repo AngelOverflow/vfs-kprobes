@@ -1,13 +1,11 @@
 #![no_std]
 #![no_main]
 
-
 #[allow(non_upper_case_globals)]
 #[allow(non_snake_case)]
 #[allow(non_camel_case_types)]
 #[allow(dead_code)]
 mod vmlinux;
-
 
 use aya_bpf::{
 macros::{kprobe,map},
@@ -21,11 +19,10 @@ bpf_probe_read_kernel_str_bytes,
 bpf_probe_read_kernel,
 },
 maps::{HashMap, PerfEventArray},
+check_bounds_signed,
 };
 
-
 use aya_log_ebpf::info;
-
 
 use vmlinux::{
     file,
@@ -36,12 +33,8 @@ use vmlinux::{
     qstr,
 };
 
-
 mod mod_file;
 use mod_file::*;
-
-
-
 
 
 
@@ -62,9 +55,6 @@ pub enum AccessType {
     Create,
     Rename,
 }
-
-
-
 
 
 
@@ -111,6 +101,11 @@ pub fn trace_entry(ctx: ProbeContext, access_type: AccessType, dentry: *const de
 // KPROBES
 // vfs_read vfs_write vfs_unlink vfs_rmdir vfs_symlink vfs_mkdir vfs_create vfs_rename
 
+/*
+List of struct fields I need :
+    dentry : d_name, d_parent
+    inode : i_mode, i_ino, i_size
+*/
 
 // VFS_READ
 #[kprobe(name = "vfs_read")]
@@ -125,32 +120,18 @@ pub fn vfs_read(ctx: ProbeContext) -> i64 {
 fn try_vfs_read(ctx: ProbeContext) -> Result<i64, i64> {
     //info!(&ctx, "function vfs_read called");
 
-
-    /*
-    List of struct fields I need :
-    dentry : d_name, d_parent
-    inode : i_mode, i_ino, i_size
-    */
-
-
     let file: *const file = ctx.arg::<*const file>(0).ok_or(1i64)?;
     let path: *const path = &unsafe {bpf_probe_read_kernel(&(*file).f_path).map_err(|e: i64| e)? };
     let dentry: *const dentry = unsafe { bpf_probe_read_kernel(&(*path).dentry).map_err(|e: i64| e)? };
-    // bytes
     let bytes: u64 = ctx.arg::<__kernel_size_t>(2).ok_or(1i64)?;
-
-
-    // inode
     let inode: *const inode = unsafe {bpf_probe_read_kernel(&(*dentry).d_inode).map_err(|e: i64| e)?};
-    trace_entry(ctx, AccessType::Read, dentry, inode, bytes) // return a Result
+    trace_entry(ctx, AccessType::Read, dentry, inode, bytes)
 }
-
-
 
 
 // VFS_WRITE
 #[kprobe(name = "vfs_write")]
-pub fn vfs_write(ctx: ProbeContext) -> u32 {
+pub fn vfs_write(ctx: ProbeContext) -> i64 {
     match try_vfs_write(ctx) {
         Ok(ret) => ret,
         Err(ret) => ret,
@@ -158,15 +139,16 @@ pub fn vfs_write(ctx: ProbeContext) -> u32 {
 }
 
 
-fn try_vfs_write(ctx: ProbeContext) -> Result<u32, u32> {
-    info!(&ctx, "function vfs_write called");
+fn try_vfs_write(ctx: ProbeContext) -> Result<i64, i64> {
+    //info!(&ctx, "function vfs_write called");
 
-
-    // trace_entry(ctx, AccessType::Write, dentry, inode, bytes);
-    Ok(0)
+    let file: *const file = ctx.arg::<*const file>(0).ok_or(1i64)?;
+    let path: *const path = &unsafe {bpf_probe_read_kernel(&(*file).f_path).map_err(|e: i64| e)? };
+    let dentry: *const dentry = unsafe { bpf_probe_read_kernel(&(*path).dentry).map_err(|e: i64| e)? };
+    let bytes: u64 = ctx.arg::<__kernel_size_t>(2).ok_or(1i64)?;
+    let inode: *const inode = unsafe {bpf_probe_read_kernel(&(*dentry).d_inode).map_err(|e: i64| e)?};
+    trace_entry(ctx, AccessType::Read, dentry, inode, bytes)
 }
-
-
 
 
 // VFS_UNLLINK
@@ -183,8 +165,6 @@ fn try_vfs_unlink(ctx: ProbeContext) -> Result<u32, u32> {
     info!(&ctx, "function vfs_unlink called");
     Ok(0)
 }
-
-
 
 
 // VFS_RMDIR
@@ -281,11 +261,11 @@ fn try_vfs_rename(ctx: ProbeContext) -> Result<u32, u32> {
 
 
 #[map]
-pub static mut filepaths_map: HashMap<u64, [u8; 1024]> = HashMap::with_max_entries(64, 0);
+pub static mut FILEPATHS_MAP: HashMap<u64, [u8; 1024]> = HashMap::with_max_entries(64, 0);
 
 
-#[map] // Not sure about PerfEventArray to instead of PerfMap from redbpf
-pub static mut fileaccesses: PerfEventArray<[u8; 1024]> = PerfEventArray::with_max_entries(1024, 0);
+#[map]
+pub static mut FILEACCESSES: PerfEventArray<[u8; 1024]> = PerfEventArray::with_max_entries(1024, 0);
 
 
 
@@ -293,7 +273,9 @@ pub static mut fileaccesses: PerfEventArray<[u8; 1024]> = PerfEventArray::with_m
 
 
 #[inline]
-pub fn dentry_to_path(ctx:ProbeContext, dentry: *const dentry, ns: u64, order: u8, fileaccess: &FileAccess) -> Result<i64, i64> {
+pub fn dentry_to_path(ctx:ProbeContext, dentry: *const dentry, ns: u64, _order: u8, fileaccess: &FileAccess) -> Result<i64, i64> {
+    // order needs to be implemented
+
     let mut i: usize = 0usize;
     let mut de: *const dentry = dentry;
 
@@ -303,8 +285,8 @@ pub fn dentry_to_path(ctx:ProbeContext, dentry: *const dentry, ns: u64, order: u
 
     unsafe {
 
-        if filepaths_map.get(&pid_tgid).is_none() {
-            filepaths_map.insert(&pid_tgid, &[0u8;1024], 0).unwrap();
+        if FILEPATHS_MAP.get(&pid_tgid).is_none() {
+            FILEPATHS_MAP.insert(&pid_tgid, &[0u8;1024], 0).unwrap();
         }
 
 
@@ -312,7 +294,7 @@ pub fn dentry_to_path(ctx:ProbeContext, dentry: *const dentry, ns: u64, order: u
 
 
         let buf: &mut [u8; 1024] = {
-            let ptr: *mut [u8; 1024] = filepaths_map.get_ptr_mut(&pid_tgid).ok_or(0)?;
+            let ptr: *mut [u8; 1024] = FILEPATHS_MAP.get_ptr_mut(&pid_tgid).ok_or(0)?;
             &mut *ptr
         };
 
@@ -335,22 +317,25 @@ pub fn dentry_to_path(ctx:ProbeContext, dentry: *const dentry, ns: u64, order: u
         offset += FILE_ACCESS_SIZE as i64;
 
 
-
-
         // Add the slash before each directory entry except the first
         if offset != 0 {
             let tmp: usize = offset as usize - 1;
-            buf[tmp] = b'/';
+            // To not trigger the verifier :
+            if check_bounds_signed(tmp as i64, 0, 1024) {
+                buf[tmp] = b'/';
+                offset+=1;
+            }
         }
-
 
         loop {
 
             let d_name: qstr = unsafe {bpf_probe_read_kernel(&(*de).d_name).map_err(|e: i64| e)?};
             let i_name: *const u8 = d_name.name;
+
             if offset < 0 {
                 break;
             }
+            
             let name_len= unsafe {
                 bpf_probe_read_kernel_str_bytes(
                     i_name,
@@ -364,7 +349,11 @@ pub fn dentry_to_path(ctx:ProbeContext, dentry: *const dentry, ns: u64, order: u
             // Add the slash before each directory entry except the first
             if offset != 0 {
                 let tmp: usize = offset as usize - 1;
-                buf[tmp] = b'/';
+                // To not trigger the verifier :
+                if check_bounds_signed(tmp as i64, 0, 1024) {
+                    buf[tmp] = b'/';
+                    offset+=1;
+                }                      
             }
 
 
@@ -378,17 +367,43 @@ pub fn dentry_to_path(ctx:ProbeContext, dentry: *const dentry, ns: u64, order: u
             if parent.is_null() || i == PATH_LIST_LEN {
                 break;
             } else {
-                de = unsafe {parent};
+                de = parent;
             }
         }
-
+        
         unsafe {
-            fileaccesses.output(&ctx, buf, 0);
-            filepaths_map.remove(&ns);
+            FILEACCESSES.output(&ctx, buf, 0);
+            FILEPATHS_MAP.remove(&ns)?;
         }
 
     }
     Ok(0i64)
+}
+
+
+fn entropy(ptr: *const u8, len: usize) -> f64 {
+    let mut freqs = [0; 32];
+    unsafe {
+        for i in 0..len {
+            let byte = *ptr.offset(i as isize);
+            let idx = (byte >> 3) as usize;
+            let shift = (byte & 0x07) as usize;
+            freqs[idx] |= 1 << shift;
+        }
+    }
+    let mut entropy = 0.0;
+    let len = len as f64;
+    for i in 0..256 {
+        let byte = i as u8;
+        let idx = (byte >> 3) as usize;
+        let shift = (byte & 0x07) as usize;
+        let count = (freqs[idx] >> shift) & 1;
+        let p = count as f64 / len;
+        if p > 0.0 {
+            entropy -= p ; // (p.log2());
+        }
+    }
+    entropy
 }
 
 
