@@ -7,6 +7,7 @@ use aya::maps::perf::AsyncPerfEventArray;
 use aya::util::online_cpus;
 use tokio::task;
 use bytes::BytesMut;
+use ebpf_monitor_common::*;
 
 
 #[tokio::main]
@@ -90,7 +91,7 @@ async fn main() -> Result<(), anyhow::Error> {
         let mut fileaccesses_cpu_buf = fileaccesses_events.open(cpu_id, None)?; 
 
         task::spawn(async move {
-            let mut buffers = (0..10)
+            let mut buffers = (0..20)
             .map(|_| BytesMut::with_capacity(1024))    
             .collect::<Vec<_>>();
             
@@ -98,9 +99,9 @@ async fn main() -> Result<(), anyhow::Error> {
                 let events = fileaccesses_cpu_buf.read_events(&mut buffers).await.unwrap();
                 for i in 0..events.read {
                     let buf: &mut BytesMut = &mut buffers[i];
-                    if let Some(str_bytes) = buf.get(72..) {  // FILE_ACCESS_SIZE = 72
+                    if let Some(str_bytes) = buf.get(FILE_ACCESS_SIZE..) {
                         let fileaccess: &str = unsafe {core::str::from_utf8_unchecked(str_bytes)};
-                        info!("{}", fileaccess);        
+                        info!("{}", fileaccess);
                     }
                 }
             }

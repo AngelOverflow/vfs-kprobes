@@ -9,6 +9,7 @@ user = ["aya"]
 
 [dependencies]
 aya = { git = "https://github.com/aya-rs/aya", optional = true }
+bytemuck="1.13"
 
 [lib]
 path = "src/lib.rs"

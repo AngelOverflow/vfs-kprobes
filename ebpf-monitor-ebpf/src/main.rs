@@ -5,6 +5,7 @@
 #[allow(non_snake_case)]
 #[allow(non_camel_case_types)]
 #[allow(dead_code)]
+
 mod vmlinux;
 
 use aya_bpf::{
@@ -33,9 +34,7 @@ use vmlinux::{
     qstr,
 };
 
-mod mod_file;
-use mod_file::*;
-
+use ebpf_monitor_common::*;
 
 
 const S_IFMT: u16 = 0o00170000;
@@ -313,19 +312,8 @@ pub fn dentry_to_path(ctx:ProbeContext, dentry: *const dentry, ns: u64, _order: 
             return Err(err);
         }
 
-
         offset += FILE_ACCESS_SIZE as i64;
 
-
-        // Add the slash before each directory entry except the first
-        if offset != 0 {
-            let tmp: usize = offset as usize - 1;
-            // To not trigger the verifier :
-            if check_bounds_signed(tmp as i64, 0, 1024) {
-                buf[tmp] = b'/';
-                offset+=1;
-            }
-        }
 
         loop {
 
@@ -345,17 +333,18 @@ pub fn dentry_to_path(ctx:ProbeContext, dentry: *const dentry, ns: u64, _order: 
                     .len()
             };
 
-
+            
             // Add the slash before each directory entry except the first
             if offset != 0 {
                 let tmp: usize = offset as usize - 1;
                 // To not trigger the verifier :
                 if check_bounds_signed(tmp as i64, 0, 1024) {
-                    buf[tmp] = b'/';
+                    //buf[tmp] = b'/';
+                    buf[tmp] = b' ';
                     offset+=1;
                 }                      
             }
-
+            
 
             offset += name_len as i64;
 
@@ -364,6 +353,9 @@ pub fn dentry_to_path(ctx:ProbeContext, dentry: *const dentry, ns: u64, _order: 
 
 
             let parent: *const dentry = unsafe {bpf_probe_read_kernel(&(*de).d_parent).map_err(|e: i64| e)?};
+            if de == parent {
+                break;
+            }
             if parent.is_null() || i == PATH_LIST_LEN {
                 break;
             } else {
