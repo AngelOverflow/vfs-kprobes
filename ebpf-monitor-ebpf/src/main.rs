@@ -9,18 +9,19 @@
 mod vmlinux;
 
 use aya_bpf::{
-macros::{kprobe,map},
-programs::ProbeContext,
-helpers::{
-bpf_get_current_comm,
-bpf_ktime_get_ns,
-bpf_get_current_pid_tgid,
-bpf_probe_read_kernel_buf,
-bpf_probe_read_kernel_str_bytes,
-bpf_probe_read_kernel,
-},
-maps::{HashMap, PerfEventArray},
-check_bounds_signed,
+    macros::{kprobe,map},
+    programs::ProbeContext,
+    helpers::{
+        bpf_get_current_comm,
+        bpf_ktime_get_ns,
+        bpf_get_current_pid_tgid,
+        bpf_probe_read_kernel_buf,
+        bpf_probe_read_kernel_str_bytes,
+        bpf_probe_read_kernel,
+    },
+    maps::{HashMap, PerfEventArray},
+    check_bounds_signed,
+    cty::c_void,
 };
 
 use aya_log_ebpf::info;
@@ -32,6 +33,8 @@ use vmlinux::{
     __kernel_size_t,
     inode,
     qstr,
+    user_namespace,
+    u_int32_t,
 };
 
 use ebpf_monitor_common::*;
@@ -101,7 +104,7 @@ pub fn trace_entry(ctx: ProbeContext, access_type: AccessType, dentry: *const de
 // vfs_read vfs_write vfs_unlink vfs_rmdir vfs_symlink vfs_mkdir vfs_create vfs_rename
 
 /*
-List of struct fields I need :
+List of struct fields needed :
     dentry : d_name, d_parent
     inode : i_mode, i_ino, i_size
 */
@@ -118,7 +121,6 @@ pub fn vfs_read(ctx: ProbeContext) -> i64 {
 
 fn try_vfs_read(ctx: ProbeContext) -> Result<i64, i64> {
     //info!(&ctx, "function vfs_read called");
-
     let file: *const file = ctx.arg::<*const file>(0).ok_or(1i64)?;
     let path: *const path = &unsafe {bpf_probe_read_kernel(&(*file).f_path).map_err(|e: i64| e)? };
     let dentry: *const dentry = unsafe { bpf_probe_read_kernel(&(*path).dentry).map_err(|e: i64| e)? };
@@ -140,7 +142,6 @@ pub fn vfs_write(ctx: ProbeContext) -> i64 {
 
 fn try_vfs_write(ctx: ProbeContext) -> Result<i64, i64> {
     //info!(&ctx, "function vfs_write called");
-
     let file: *const file = ctx.arg::<*const file>(0).ok_or(1i64)?;
     let path: *const path = &unsafe {bpf_probe_read_kernel(&(*file).f_path).map_err(|e: i64| e)? };
     let dentry: *const dentry = unsafe { bpf_probe_read_kernel(&(*path).dentry).map_err(|e: i64| e)? };
@@ -150,125 +151,181 @@ fn try_vfs_write(ctx: ProbeContext) -> Result<i64, i64> {
 }
 
 
-// VFS_UNLLINK
+// VFS_UNLINK
 #[kprobe(name = "vfs_unlink")]
-pub fn vfs_unlink(ctx: ProbeContext) -> u32 {
+pub fn vfs_unlink(ctx: ProbeContext) -> i64  {
     match try_vfs_unlink(ctx) {
         Ok(ret) => ret,
         Err(ret) => ret,
     }
 }
 
-
-fn try_vfs_unlink(ctx: ProbeContext) -> Result<u32, u32> {
-    info!(&ctx, "function vfs_unlink called");
-    Ok(0)
+#[cfg(not(feature = "kl5-12"))]
+fn try_vfs_unlink(ctx: ProbeContext) -> Result<i64, i64> {
+    //info!(&ctx, "function vfs_unlink called");
+    let dentry : *const dentry = ctx.arg::<*const dentry>(2).ok_or(1i64)?;
+    let inode : *const inode = ctx.arg::<*const inode>(1).ok_or(1i64)?;
+    trace_entry(ctx, AccessType::Unlink, dentry, inode, 0)
 }
 
+#[cfg(feature = "kl5-12")]
+fn try_vfs_unlink(ctx: ProbeContext) -> Result<i64, i64> {
+    //info!(&ctx, "function vfs_unlink called");
+    let dentry : *const dentry = ctx.arg::<*const dentry>(1).ok_or(1i64)?;
+    let inode : *const inode = ctx.arg::<*const inode>(0).ok_or(1i64)?;
+    trace_entry(ctx, AccessType::Unlink, dentry, inode, 0)
+}
 
 // VFS_RMDIR
 #[kprobe(name = "vfs_rmdir")]
-pub fn vfs_rmdir(ctx: ProbeContext) -> u32 {
+pub fn vfs_rmdir(ctx: ProbeContext) -> i64 {
     match try_vfs_rmdir(ctx) {
         Ok(ret) => ret,
         Err(ret) => ret,
     }
 }
 
-
-fn try_vfs_rmdir(ctx: ProbeContext) -> Result<u32, u32> {
-    info!(&ctx, "function vfs_rmdir called");
-    Ok(0)
+#[cfg(not(feature = "kl5-12"))]
+fn try_vfs_rmdir(ctx: ProbeContext) -> Result<i64, i64> {
+    //info!(&ctx, "function vfs_rmdir called");
+    let dentry : *const dentry = ctx.arg::<*const dentry>(2).ok_or(1i64)?;
+    let inode: *const inode = unsafe {bpf_probe_read_kernel(&(*dentry).d_inode).map_err(|e: i64| e)?};
+    trace_entry(ctx, AccessType::Rmdir, dentry, inode, 0)
 }
 
-
+#[cfg(feature = "kl5-12")]
+fn try_vfs_rmdir(ctx: ProbeContext) -> Result<i64, i64> {
+    //info!(&ctx, "function vfs_rmdir called");
+    let dentry : *const dentry = ctx.arg::<*const dentry>(1).ok_or(1i64)?;
+    trace_entry(ctx, AccessType::Rmdir, dentry, inode, 0)
+}
 
 
 // VFS_SYMLINK
 #[kprobe(name = "vfs_symlink")]
-pub fn vfs_symlink(ctx: ProbeContext) -> u32 {
+pub fn vfs_symlink(ctx: ProbeContext) -> i64 {
     match try_vfs_symlink(ctx) {
         Ok(ret) => ret,
         Err(ret) => ret,
     }
 }
 
-
-fn try_vfs_symlink(ctx: ProbeContext) -> Result<u32, u32> {
-    info!(&ctx, "function vfs_symlink called");
-    Ok(0)
+#[cfg(not(feature = "kl5-12"))]
+fn try_vfs_symlink(ctx: ProbeContext) -> Result<i64, i64> {
+    //info!(&ctx, "function vfs_symlink called");
+    let dentry : *const dentry = ctx.arg::<*const dentry>(2).ok_or(1i64)?;
+    let inode : *const inode = ctx.arg::<*const inode>(1).ok_or(1i64)?;
+    trace_entry(ctx, AccessType::Symlink, dentry, inode, 0)
 }
 
-
+#[cfg(feature = "kl5-12")]
+fn try_vfs_symlink(ctx: ProbeContext) -> Result<i64, i64> {
+    //info!(&ctx, "function vfs_symlink called");
+    let dentry : *const dentry = ctx.arg::<*const dentry>(1).ok_or(1i64)?;
+    let inode : *const inode = ctx.arg::<*const inode>(0).ok_or(1i64)?;
+    trace_entry(ctx, AccessType::Symlink, dentry, inode, 0)
+}
 
 
 // VFS_MKDIR
 #[kprobe(name = "vfs_mkdir")]
-pub fn vfs_mkdir(ctx: ProbeContext) -> u32 {
+pub fn vfs_mkdir(ctx: ProbeContext) -> i64 {
     match try_vfs_mkdir(ctx) {
         Ok(ret) => ret,
         Err(ret) => ret,
     }
 }
 
+#[cfg(not(feature = "kl5-12"))]
+fn try_vfs_mkdir(ctx: ProbeContext) -> Result<i64, i64> {
+    //info!(&ctx, "function vfs_mkdir called");
+    let dentry : *const dentry = ctx.arg::<*const dentry>(2).ok_or(1i64)?;
+    let inode : *const inode = ctx.arg::<*const inode>(1).ok_or(1i64)?;
+    trace_entry(ctx, AccessType::Mkdir, dentry, inode, 0)
+}
 
-fn try_vfs_mkdir(ctx: ProbeContext) -> Result<u32, u32> {
-    info!(&ctx, "function vfs_mkdir called");
-    Ok(0)
+#[cfg(feature = "kl5-12")]
+fn try_vfs_mkdir(ctx: ProbeContext) -> Result<i64, i64> {
+    //info!(&ctx, "function vfs_mkdir called");
+    let dentry : *const dentry = ctx.arg::<*const dentry>(1).ok_or(1i64)?;
+    let inode : *const inode = ctx.arg::<*const inode>(0).ok_or(1i64)?;
+    trace_entry(ctx, AccessType::Mkdir, dentry, inode, 0)
 }
 
 
-
-
-// VFS_CREATE
+// VFS_CREATE (Isn't triggered)
 #[kprobe(name = "vfs_create")]
-pub fn vfs_create(ctx: ProbeContext) -> u32 {
+pub fn vfs_create(ctx: ProbeContext) -> i64 {
     match try_vfs_create(ctx) {
         Ok(ret) => ret,
         Err(ret) => ret,
     }
 }
 
-
-fn try_vfs_create(ctx: ProbeContext) -> Result<u32, u32> {
-    info!(&ctx, "function vfs_create called");
-    Ok(0)
+#[cfg(not(feature = "kl5-12"))]
+fn try_vfs_create(ctx: ProbeContext) -> Result<i64, i64> {
+    //info!(&ctx, "function vfs_create called");
+    let dentry : *const dentry = ctx.arg::<*const dentry>(2).ok_or(1i64)?;
+    let inode : *const inode = ctx.arg::<*const inode>(1).ok_or(1i64)?;
+    trace_entry(ctx, AccessType::Create, dentry, inode, 0)
 }
 
-
+#[cfg(feature = "kl5-12")]
+fn try_vfs_create(ctx: ProbeContext) -> Result<i64, i64> {
+    //info!(&ctx, "function vfs_create called");
+    let dentry : *const dentry = ctx.arg::<*const dentry>(1).ok_or(1i64)?;
+    let inode : *const inode = ctx.arg::<*const inode>(0).ok_or(1i64)?;
+    trace_entry(ctx, AccessType::Create, dentry, inode, 0)
+}
 
 
 // VFS_RENAME
 #[kprobe(name = "vfs_rename")]
-pub fn vfs_rename(ctx: ProbeContext) -> u32 {
+pub fn vfs_rename(ctx: ProbeContext) -> i64 {
     match try_vfs_rename(ctx) {
         Ok(ret) => ret,
         Err(ret) => ret,
     }
 }
 
-
-fn try_vfs_rename(ctx: ProbeContext) -> Result<u32, u32> {
-    info!(&ctx, "function vfs_rename called");
-    Ok(0)
+#[repr(C)]
+#[cfg(not(feature = "kl5-12"))]
+pub struct renamedata {
+    pub old_mnt_userns: *mut user_namespace,
+    pub old_dir: *mut inode,
+    pub old_dentry: *mut dentry,
+    pub new_mnt_users: *mut user_namespace,
+    pub new_dir: *mut inode,
+    pub new_dentry: *mut dentry,
+    pub delegated_inode: *mut c_void,
+    pub flags: u_int32_t,
 }
 
+#[cfg(not(feature = "kl5-12"))]
+fn try_vfs_rename(ctx: ProbeContext) -> Result<i64, i64> {
+    //info!(&ctx, "function vfs_rename called");
+    let renamedata: *const renamedata = ctx.arg::<*const renamedata>(0).ok_or(1i64)?;
+    let old_dentry : *const dentry = unsafe {bpf_probe_read_kernel(&(*renamedata).old_dentry).map_err(|e: i64| e)?};
+    let old_inode : *const inode = unsafe {bpf_probe_read_kernel(&(*renamedata).old_dir).map_err(|e: i64| e)?};
+    trace_entry(ctx, AccessType::Rename, old_dentry, old_inode, 0)
+}
 
+#[cfg(feature = "kl5-12")]
+pub fn try_vfs_rename(ctx: ProbeContext) -> Result<i64, i64> {
+    //info!(&ctx, "function vfs_rename called");
+    let old_dentry: *const dentry = ctx.arg::<*const dentry>(0).ok_or(1i64)?;
+    let old_inode: *const inode =  ctx.arg::<*const inode>(1).ok_or(1i64)?;
+    trace_entry(ctx, AccessType::Rename, old_dentry, old_inode, 0)
+}
 
 
 // MAPS
 
-
 #[map]
 pub static mut FILEPATHS_MAP: HashMap<u64, [u8; 1024]> = HashMap::with_max_entries(64, 0);
 
-
 #[map]
 pub static mut FILEACCESSES: PerfEventArray<[u8; 1024]> = PerfEventArray::with_max_entries(1024, 0);
-
-
-
-
 
 
 #[inline]

@@ -8,6 +8,9 @@ aya-bpf = { git = "https://github.com/aya-rs/aya" }
 aya-log-ebpf = { git = "https://github.com/aya-rs/aya" }
 ebpf-monitor-common = { path = "../ebpf-monitor-common" }
 
+[features]
+kl5-12 = []
+
 [[bin]]
 name = "ebpf-monitor"
 path = "src/main.rs"

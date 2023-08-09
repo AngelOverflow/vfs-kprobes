@@ -45,7 +45,7 @@ async fn main() -> Result<(), anyhow::Error> {
     
     // KPROBES
     // vfs_read vfs_write vfs_unlink vfs_rmdir vfs_symlink vfs_mkdir vfs_create vfs_rename
-    
+        
     let program_vfs_read: &mut KProbe = bpf.program_mut("vfs_read").unwrap().try_into()?;
     program_vfs_read.load()?;
     program_vfs_read.attach("vfs_read", 0)?;
@@ -53,16 +53,15 @@ async fn main() -> Result<(), anyhow::Error> {
     let program_vfs_write: &mut KProbe = bpf.program_mut("vfs_write").unwrap().try_into()?;
     program_vfs_write.load()?;
     program_vfs_write.attach("vfs_write", 0)?;
-
-    /*
+    
     let program_vfs_unlink: &mut KProbe = bpf.program_mut("vfs_unlink").unwrap().try_into()?;
     program_vfs_unlink.load()?;
     program_vfs_unlink.attach("vfs_unlink", 0)?;
-
+    
     let program_vfs_rmdir: &mut KProbe = bpf.program_mut("vfs_rmdir").unwrap().try_into()?;
     program_vfs_rmdir.load()?;
     program_vfs_rmdir.attach("vfs_rmdir", 0)?;
-
+    
     let program_vfs_symlink: &mut KProbe = bpf.program_mut("vfs_symlink").unwrap().try_into()?;
     program_vfs_symlink.load()?;
     program_vfs_symlink.attach("vfs_symlink", 0)?;
@@ -71,6 +70,7 @@ async fn main() -> Result<(), anyhow::Error> {
     program_vfs_mkdir.load()?;
     program_vfs_mkdir.attach("vfs_mkdir", 0)?;
 
+    // vfs_create isn't triggered even when creating files etc ...
     let program_vfs_create: &mut KProbe = bpf.program_mut("vfs_create").unwrap().try_into()?;
     program_vfs_create.load()?;
     program_vfs_create.attach("vfs_create", 0)?;
@@ -78,11 +78,9 @@ async fn main() -> Result<(), anyhow::Error> {
     let program_vfs_rename: &mut KProbe = bpf.program_mut("vfs_rename").unwrap().try_into()?;
     program_vfs_rename.load()?;
     program_vfs_rename.attach("vfs_rename", 0)?;
-    */
+    
 
-
-
-    // DISPLAY LOGS OF FILEPATHS (For vfs_write or vfs_read)
+    // DISPLAY LOGS OF FILEPATHS
 
     let mut fileaccesses_events : AsyncPerfEventArray<_> = bpf.take_map("FILEACCESSES").unwrap().try_into().unwrap();
 
@@ -107,8 +105,6 @@ async fn main() -> Result<(), anyhow::Error> {
             }
         });
     }
-
-
 
     info!("Waiting for Ctrl-C...");
     signal::ctrl_c().await?;
