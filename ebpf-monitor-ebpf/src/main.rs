@@ -9,7 +9,7 @@
 mod vmlinux;
 
 use aya_bpf::{
-    macros::{kprobe,map},
+    macros::{kprobe,kretprobe,map},
     programs::ProbeContext,
     helpers::{
         bpf_get_current_comm,
@@ -58,7 +58,21 @@ pub enum AccessType {
     Rename,
 }
 
-
+//TODO : vérifier premier caractère == "/" avant de tout virer, au risque d'ignorer
+//des fichiers dont le nom est d'une lettre à la racine de point de montage
+#[inline]
+fn only_zeros_unsafe(arr: &[u8]) -> bool {
+    let len = arr.len();
+    let ptr = arr.as_ptr();
+    unsafe {
+        for i in 1..len {
+            if *ptr.add(i) != 0 {
+                return false;
+            }
+        }
+    }
+    true
+}
 
 #[inline(always)]
 pub fn trace_entry(ctx: ProbeContext, access_type: AccessType, dentry: *const dentry, inode: *const inode, bytes: __kernel_size_t) -> Result<i64, i64> {
@@ -254,7 +268,7 @@ fn try_vfs_mkdir(ctx: ProbeContext) -> Result<i64, i64> {
 
 
 // VFS_CREATE (Isn't triggered)
-#[kprobe(name = "vfs_create")]
+#[kretprobe(name = "vfs_create")]
 pub fn vfs_create(ctx: ProbeContext) -> i64 {
     match try_vfs_create(ctx) {
         Ok(ret) => ret,
@@ -356,7 +370,7 @@ pub fn dentry_to_path(ctx:ProbeContext, dentry: *const dentry, ns: u64, _order: 
 
 
         let mut offset: i64 = 0i64;
-        let ret: Result<(), i64> = unsafe {
+        let ret: Result<(), i64> = {
             bpf_probe_read_kernel_buf(
             u8_array.as_ptr(),
             &mut buf[offset as usize..offset as usize + FILE_ACCESS_SIZE],
@@ -374,14 +388,14 @@ pub fn dentry_to_path(ctx:ProbeContext, dentry: *const dentry, ns: u64, _order: 
 
         loop {
 
-            let d_name: qstr = unsafe {bpf_probe_read_kernel(&(*de).d_name).map_err(|e: i64| e)?};
+            let d_name: qstr = bpf_probe_read_kernel(&(*de).d_name).map_err(|e: i64| e)?;
             let i_name: *const u8 = d_name.name;
 
             if offset < 0 {
                 break;
             }
             
-            let name_len= unsafe {
+            let name_len = {
                 bpf_probe_read_kernel_str_bytes(
                     i_name,
                     &mut buf[offset as usize..offset as usize + 32usize],
@@ -396,8 +410,7 @@ pub fn dentry_to_path(ctx:ProbeContext, dentry: *const dentry, ns: u64, _order: 
                 let tmp: usize = offset as usize - 1;
                 // To not trigger the verifier :
                 if check_bounds_signed(tmp as i64, 0, 1024) {
-                    //buf[tmp] = b'/';
-                    buf[tmp] = b' ';
+                    buf[tmp] = b'/';
                     offset+=1;
                 }                      
             }
@@ -409,7 +422,7 @@ pub fn dentry_to_path(ctx:ProbeContext, dentry: *const dentry, ns: u64, _order: 
             i += 1;
 
 
-            let parent: *const dentry = unsafe {bpf_probe_read_kernel(&(*de).d_parent).map_err(|e: i64| e)?};
+            let parent: *const dentry = bpf_probe_read_kernel(&(*de).d_parent).map_err(|e: i64| e)?;
             if de == parent {
                 break;
             }
@@ -420,10 +433,9 @@ pub fn dentry_to_path(ctx:ProbeContext, dentry: *const dentry, ns: u64, _order: 
             }
         }
         
-        unsafe {
-            FILEACCESSES.output(&ctx, buf, 0);
-            FILEPATHS_MAP.remove(&ns)?;
-        }
+        
+        FILEACCESSES.output(&ctx, buf, 0);
+        FILEPATHS_MAP.remove(&ns)?;
 
     }
     Ok(0i64)

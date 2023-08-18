@@ -45,7 +45,7 @@ async fn main() -> Result<(), anyhow::Error> {
     
     // KPROBES
     // vfs_read vfs_write vfs_unlink vfs_rmdir vfs_symlink vfs_mkdir vfs_create vfs_rename
-        
+    
     let program_vfs_read: &mut KProbe = bpf.program_mut("vfs_read").unwrap().try_into()?;
     program_vfs_read.load()?;
     program_vfs_read.attach("vfs_read", 0)?;
@@ -69,18 +69,20 @@ async fn main() -> Result<(), anyhow::Error> {
     let program_vfs_mkdir: &mut KProbe = bpf.program_mut("vfs_mkdir").unwrap().try_into()?;
     program_vfs_mkdir.load()?;
     program_vfs_mkdir.attach("vfs_mkdir", 0)?;
-
-    // vfs_create isn't triggered even when creating files etc ...
+    
+    /*
+    // There is an issue with vfs_creat which isn't triggered event when creating files.
     let program_vfs_create: &mut KProbe = bpf.program_mut("vfs_create").unwrap().try_into()?;
     program_vfs_create.load()?;
     program_vfs_create.attach("vfs_create", 0)?;
+    */
 
     let program_vfs_rename: &mut KProbe = bpf.program_mut("vfs_rename").unwrap().try_into()?;
     program_vfs_rename.load()?;
     program_vfs_rename.attach("vfs_rename", 0)?;
     
 
-    // DISPLAY LOGS OF FILEPATHS
+    // DISPLAY FILEPATHS (There is an issue with some d_name starting with "/" which causes filepaths to contain successive /)
 
     let mut fileaccesses_events : AsyncPerfEventArray<_> = bpf.take_map("FILEACCESSES").unwrap().try_into().unwrap();
 
@@ -89,7 +91,7 @@ async fn main() -> Result<(), anyhow::Error> {
         let mut fileaccesses_cpu_buf = fileaccesses_events.open(cpu_id, None)?; 
 
         task::spawn(async move {
-            let mut buffers = (0..20)
+            let mut buffers = (0..10)
             .map(|_| BytesMut::with_capacity(1024))    
             .collect::<Vec<_>>();
             

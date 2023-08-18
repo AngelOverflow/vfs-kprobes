@@ -27,7 +27,7 @@ type Buf = [u8; 32];//PATH_SEGMENT_LEN];
 //#[derive(Debug, Default)]
 //#[repr(packed)]
 pub struct FilePath {
-//    pub order: u8,
+//  pub order: u8,
     pub ns: u64,
     pub level: usize,
     pub buf: Buf,
